@@ -1,0 +1,14 @@
+{
+  "name": "My Closet",
+  "short_name": "Closet",
+  "description": "Personal closet tracker with weather-based outfit recommendations",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f5f2ec",
+  "theme_color": "#f5f2ec",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

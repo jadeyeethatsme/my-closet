@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>My Closet</title>
+<meta name="description" content="Personal closet tracker with weather-based outfit recommendations">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Closet">
+<meta name="theme-color" content="#f5f2ec" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#161513" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<main>
+  <!-- ============ TODAY ============ -->
+  <section id="view-today" class="view">
+    <header class="view-header">
+      <div>
+        <h1 id="today-greeting">Today</h1>
+        <button id="location-btn" class="location-btn" type="button">
+          <span id="location-name">Set location</span> ▾
+        </button>
+      </div>
+      <button id="settings-btn" class="icon-btn" type="button" aria-label="Settings">⚙︎</button>
+    </header>
+
+    <div id="weather-card" class="weather-card">
+      <div class="weather-loading">Fetching weather…</div>
+    </div>
+
+    <div class="outfit-header">
+      <h2>Today's outfit</h2>
+      <button id="shuffle-btn" class="pill-btn" type="button">↻ Shuffle</button>
+    </div>
+    <p id="outfit-note" class="outfit-note hidden"></p>
+    <div id="outfit-grid" class="outfit-grid"></div>
+    <button id="wearing-btn" class="primary-btn hidden" type="button">✓ I'm wearing this</button>
+
+    <div id="today-empty" class="empty-state hidden">
+      <div class="empty-emoji">🧺</div>
+      <p>Your closet is empty.<br>Add some clothes and I'll start suggesting outfits.</p>
+      <button class="primary-btn" type="button" data-goto="add">+ Add your first item</button>
+    </div>
+  </section>
+
+  <!-- ============ CLOSET ============ -->
+  <section id="view-closet" class="view hidden">
+    <header class="view-header">
+      <div>
+        <h1>Closet</h1>
+        <p id="closet-count" class="subtitle"></p>
+      </div>
+    </header>
+    <div id="filter-chips" class="chip-row"></div>
+    <div id="closet-grid" class="closet-grid"></div>
+    <div id="closet-empty" class="empty-state hidden">
+      <div class="empty-emoji">👕</div>
+      <p>Nothing here yet.</p>
+      <button class="primary-btn" type="button" data-goto="add">+ Add an item</button>
+    </div>
+  </section>
+
+  <!-- ============ ADD / EDIT ============ -->
+  <section id="view-add" class="view hidden">
+    <header class="view-header">
+      <h1 id="add-title">Add item</h1>
+    </header>
+    <form id="item-form">
+      <label class="photo-picker" id="photo-picker">
+        <input type="file" id="photo-input" accept="image/*" hidden>
+        <img id="photo-preview" class="hidden" alt="">
+        <span id="photo-hint">📷<br>Add a photo</span>
+      </label>
+
+      <label class="field">
+        <span>Name</span>
+        <input type="text" id="f-name" placeholder="e.g. Blue linen shirt" required autocomplete="off">
+      </label>
+
+      <div class="field">
+        <span>Category</span>
+        <div class="chip-row" id="f-category"></div>
+      </div>
+
+      <div class="field">
+        <span>Warmth · <em id="warmth-label">Medium</em></span>
+        <input type="range" id="f-warmth" min="1" max="5" step="1" value="3">
+        <div class="range-ends"><span>Very light</span><span>Very warm</span></div>
+      </div>
+
+      <label class="field switch-field">
+        <span>Rain-friendly (waterproof)</span>
+        <input type="checkbox" id="f-waterproof">
+      </label>
+
+      <label class="field switch-field">
+        <span>Favorite ♥</span>
+        <input type="checkbox" id="f-favorite">
+      </label>
+
+      <label class="field">
+        <span>Notes <em>(optional)</em></span>
+        <input type="text" id="f-notes" placeholder="e.g. goes well with white sneakers" autocomplete="off">
+      </label>
+
+      <button type="submit" class="primary-btn" id="save-btn">Save to closet</button>
+      <button type="button" class="danger-btn hidden" id="delete-btn">Delete item</button>
+    </form>
+  </section>
+</main>
+
+<!-- ============ TAB BAR ============ -->
+<nav class="tabbar">
+  <button data-tab="today" class="tab active" type="button"><span class="tab-icon">☀️</span>Today</button>
+  <button data-tab="closet" class="tab" type="button"><span class="tab-icon">👗</span>Closet</button>
+  <button data-tab="add" class="tab" type="button"><span class="tab-icon">＋</span>Add</button>
+</nav>
+
+<!-- ============ ITEM DETAIL ============ -->
+<dialog id="item-dialog">
+  <img id="d-photo" class="hidden" alt="">
+  <div class="dialog-body">
+    <h2 id="d-name"></h2>
+    <p id="d-meta" class="subtitle"></p>
+    <p id="d-notes" class="d-notes"></p>
+    <div class="dialog-actions">
+      <button id="d-fav" class="pill-btn" type="button">♥</button>
+      <button id="d-edit" class="pill-btn" type="button">Edit</button>
+      <button id="d-close" class="pill-btn" type="button">Close</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- ============ LOCATION ============ -->
+<dialog id="location-dialog">
+  <div class="dialog-body">
+    <h2>Location</h2>
+    <button id="use-gps" class="primary-btn" type="button">📍 Use my current location</button>
+    <p class="subtitle center">or search for a city</p>
+    <input type="text" id="city-search" placeholder="City name…" autocomplete="off">
+    <div id="city-results"></div>
+    <div class="dialog-actions">
+      <button id="loc-close" class="pill-btn" type="button">Close</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- ============ SETTINGS ============ -->
+<dialog id="settings-dialog">
+  <div class="dialog-body">
+    <h2>Settings</h2>
+    <div class="field">
+      <span>Temperature unit</span>
+      <div class="chip-row">
+        <button class="chip unit-chip" data-unit="F" type="button">°F</button>
+        <button class="chip unit-chip" data-unit="C" type="button">°C</button>
+      </div>
+    </div>
+    <div class="field">
+      <span>Backup</span>
+      <div class="chip-row">
+        <button id="export-btn" class="chip" type="button">⬇ Export closet</button>
+        <label class="chip">⬆ Import<input type="file" id="import-input" accept=".json" hidden></label>
+      </div>
+      <p class="subtitle">Your closet lives only on this device. Export a backup once in a while.</p>
+    </div>
+    <div class="dialog-actions">
+      <button id="settings-close" class="pill-btn" type="button">Close</button>
+    </div>
+  </div>
+</dialog>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
