@@ -486,11 +486,10 @@ $('#d-edit').addEventListener('click', () => {
 
 /* ================= photo processing ================= */
 
-function fileToCanvas(file) {
+function fileToCanvas(file, MAX = 900) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
-      const MAX = 900;
       const scale = Math.min(1, MAX / Math.max(img.width, img.height));
       const canvas = document.createElement('canvas');
       canvas.width = Math.round(img.width * scale);
@@ -652,6 +651,177 @@ let strengthTimer = null;
 $('#f-cutout-strength').addEventListener('input', () => {
   clearTimeout(strengthTimer);
   strengthTimer = setTimeout(processPhoto, 250);
+});
+
+/* ================= outfit photo import (on-device AI segmentation) ================= */
+
+const SEG_CDN = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3';
+const SEG_MODEL = 'Xenova/segformer_b2_clothes';
+const SEG_GROUPS = [
+  { labels: ['Upper-clothes'],           category: 'top',       name: 'Top' },
+  { labels: ['Pants'],                   category: 'pants',     name: 'Pants' },
+  { labels: ['Skirt'],                   category: 'skirt',     name: 'Skirt' },
+  { labels: ['Dress'],                   category: 'dress',     name: 'Dress' },
+  { labels: ['Left-shoe', 'Right-shoe'], category: 'shoes',     name: 'Shoes' },
+  { labels: ['Hat'],                     category: 'accessory', name: 'Hat' },
+  { labels: ['Scarf'],                   category: 'accessory', name: 'Scarf' },
+  { labels: ['Belt'],                    category: 'accessory', name: 'Belt' },
+  { labels: ['Bag'],                     category: 'accessory', name: 'Bag' },
+];
+
+let segLoader = null;
+function loadSegmenter(onStatus) {
+  if (!segLoader) {
+    segLoader = (async () => {
+      onStatus('Loading the AI model…');
+      const t = await import(SEG_CDN);
+      const opts = {
+        dtype: 'q8',
+        progress_callback: p => {
+          if (p.status === 'progress' && p.file && p.file.endsWith('.onnx')) {
+            onStatus(`Downloading the AI model… ${Math.round(p.progress || 0)}% (one time only)`);
+          }
+        },
+      };
+      // wasm on purpose: the q8 weights produce garbage output on webgpu
+      return await t.pipeline('image-segmentation', SEG_MODEL, { ...opts, device: 'wasm' });
+    })();
+    segLoader.catch(() => { segLoader = null; });  // allow retry after a failed load
+  }
+  return segLoader;
+}
+
+function cropCanvas(canvas, minX, minY, maxX, maxY) {
+  const pad = Math.round(Math.max(maxX - minX, maxY - minY) * 0.05) + 4;
+  minX = Math.max(0, minX - pad); minY = Math.max(0, minY - pad);
+  maxX = Math.min(canvas.width - 1, maxX + pad); maxY = Math.min(canvas.height - 1, maxY + pad);
+  const cw = maxX - minX + 1, ch = maxY - minY + 1;
+  const out = document.createElement('canvas');
+  out.width = cw; out.height = ch;
+  out.getContext('2d').drawImage(canvas, minX, minY, cw, ch, 0, 0, cw, ch);
+  return out;
+}
+
+/* apply one or more segmentation masks to the photo and crop to the garment */
+function maskCutout(src, masks) {
+  const w = src.width, h = src.height;
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+  ctx.drawImage(src, 0, 0);
+  const imgd = ctx.getImageData(0, 0, w, h);
+  const d = imgd.data;
+  let minX = w, minY = h, maxX = -1, maxY = -1, count = 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let on = false;
+      for (const m of masks) {
+        const mx = (x * m.width / w) | 0, my = (y * m.height / h) | 0;
+        if (m.data[my * m.width + mx] > 127) { on = true; break; }
+      }
+      const p = (y * w + x) * 4;
+      if (!on) { d[p + 3] = 0; continue; }
+      count++;
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+    }
+  }
+  if (count < w * h * 0.002) return null;  // sliver — not a real garment
+  ctx.putImageData(imgd, 0, 0);
+  return cropCanvas(c, minX, minY, maxX, maxY);
+}
+
+async function segmentOutfit(file, onStatus) {
+  const canvas = await fileToCanvas(file, 1000);
+  const seg = await loadSegmenter(onStatus);
+  onStatus('Analyzing your outfit…');
+  await new Promise(r => setTimeout(r, 30));  // let the status paint before inference blocks
+  const segments = await seg(canvas.toDataURL('image/jpeg', 0.9));
+  const found = [];
+  for (const g of SEG_GROUPS) {
+    const masks = segments.filter(s => g.labels.includes(s.label)).map(s => s.mask);
+    if (!masks.length) continue;
+    const cut = maskCutout(canvas, masks);
+    if (cut) found.push({ ...g, canvas: cut });
+  }
+  return found;
+}
+
+let oiRows = [];  // [{piece, row}]
+$('#outfit-import-btn').addEventListener('click', () => $('#outfit-photo-input').click());
+$('#oi-cancel').addEventListener('click', () => $('#outfit-import-dialog').close());
+
+$('#outfit-photo-input').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  e.target.value = '';
+  const status = $('#oi-status'), results = $('#oi-results');
+  results.innerHTML = '';
+  oiRows = [];
+  $('#oi-add').classList.add('hidden');
+  status.textContent = 'Reading photo…';
+  $('#outfit-import-dialog').showModal();
+  try {
+    const found = await segmentOutfit(file, t => { status.textContent = t; });
+    if (!found.length) {
+      status.textContent = "I couldn't find any clothing in that photo. Try a full-body photo in good light.";
+      return;
+    }
+    status.textContent = `Found ${found.length} piece${found.length === 1 ? '' : 's'} — tweak and uncheck as needed.`;
+    for (const piece of found) {
+      const row = document.createElement('div');
+      row.className = 'oi-row';
+      row.innerHTML = `
+        <div class="oi-thumb"></div>
+        <div class="oi-main">
+          <input type="text" class="oi-name" value="${esc(piece.name)}" autocomplete="off">
+          <div class="oi-selects">
+            <select class="oi-select oi-cat">${CATEGORIES.map(c =>
+              `<option value="${c.key}"${c.key === piece.category ? ' selected' : ''}>${c.emoji} ${c.label}</option>`).join('')}</select>
+            <select class="oi-select oi-warmth">${WARMTH_LABELS.map((l, i) =>
+              `<option value="${i + 1}"${i === 2 ? ' selected' : ''}>${l}</option>`).join('')}</select>
+          </div>
+        </div>
+        <input type="checkbox" class="oi-check" checked>`;
+      row.querySelector('.oi-thumb').appendChild(piece.canvas);
+      results.appendChild(row);
+      oiRows.push({ piece, row });
+    }
+    $('#oi-add').classList.remove('hidden');
+  } catch (err) {
+    status.textContent = "Couldn't load the AI model — check your connection and try again.";
+  }
+});
+
+$('#oi-add').addEventListener('click', async () => {
+  const btn = $('#oi-add');
+  if (btn.disabled) return;
+  btn.disabled = true;
+  btn.textContent = 'Adding…';
+  let n = 0;
+  for (const { piece, row } of oiRows) {
+    if (!row.querySelector('.oi-check').checked) continue;
+    const blob = await new Promise(r => piece.canvas.toBlob(r, 'image/png'));
+    const item = {
+      id: uid(),
+      name: row.querySelector('.oi-name').value.trim() || piece.name,
+      category: row.querySelector('.oi-cat').value,
+      warmth: +row.querySelector('.oi-warmth').value,
+      waterproof: false,
+      favorite: false,
+      notes: '',
+      photo: blob,
+      cutout: true,
+      createdAt: Date.now(),
+      lastWorn: null,
+    };
+    await dbPut('items', item);
+    items.push(item);
+    n++;
+  }
+  btn.disabled = false;
+  btn.textContent = 'Add to closet';
+  $('#outfit-import-dialog').close();
+  if (n) { toast(`Added ${n} item${n === 1 ? '' : 's'} to your closet ✓`); showView('closet'); }
 });
 
 /* ================= add / edit form ================= */

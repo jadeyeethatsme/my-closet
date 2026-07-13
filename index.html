@@ -94,6 +94,12 @@
         <span id="photo-hint">📷<br>Add a photo</span>
       </label>
 
+      <div class="oi-cta-row">
+        <span class="subtitle">or</span>
+        <button type="button" class="pill-btn" id="outfit-import-btn">🤳 Snap your whole outfit — auto-split into items</button>
+        <input type="file" id="outfit-photo-input" accept="image/*" hidden>
+      </div>
+
       <div class="field hidden" id="cutout-field">
         <label class="switch-field">
           <span>✂️ Cut out background</span>
@@ -175,6 +181,19 @@
     <div id="city-results"></div>
     <div class="dialog-actions">
       <button id="loc-close" class="pill-btn" type="button">Close</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- ============ OUTFIT IMPORT ============ -->
+<dialog id="outfit-import-dialog">
+  <div class="dialog-body">
+    <h2>Outfit import</h2>
+    <p id="oi-status" class="subtitle"></p>
+    <div id="oi-results"></div>
+    <div class="dialog-actions">
+      <button id="oi-cancel" class="pill-btn" type="button">Cancel</button>
+      <button id="oi-add" class="pill-btn oi-add-btn hidden" type="button">Add to closet</button>
     </div>
   </div>
 </dialog>
