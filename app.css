@@ -184,7 +184,7 @@ input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--accent); }
 .tab {
   border: none; background: none; color: var(--muted); font-size: 11.5px; font-weight: 600;
   display: flex; flex-direction: column; align-items: center; gap: 3px;
-  cursor: pointer; font-family: inherit; width: 76px;
+  cursor: pointer; font-family: inherit; width: 68px;
 }
 .tab .tab-icon { font-size: 21px; }
 .tab.active { color: var(--accent); }
@@ -206,6 +206,36 @@ dialog img { width: 100%; max-height: 46vh; object-fit: cover; display: block; }
 .city-option {
   border: 1px solid var(--line); background: none; color: var(--text);
   text-align: left; padding: 10px 12px; border-radius: 10px; font: inherit; font-size: 14.5px; cursor: pointer;
+}
+
+/* ---------- cutout photos ---------- */
+.outfit-card img.cut, .closet-cell img.cut, .photo-picker img.cut {
+  object-fit: contain; padding: 7%; background: var(--accent-soft);
+}
+dialog img.cut { object-fit: contain; padding: 5%; background: var(--accent-soft); }
+#cutout-strength-wrap { margin-top: 10px; }
+
+/* ---------- history ---------- */
+.history-entry {
+  background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow);
+  padding: 14px; margin-bottom: 12px;
+}
+.history-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.history-date { font-weight: 700; font-size: 15px; }
+.history-meta { color: var(--muted); font-size: 13px; margin-left: 8px; }
+.history-thumbs { display: flex; gap: 8px; flex-wrap: wrap; }
+.history-thumb {
+  width: 62px; height: 62px; border-radius: 12px; overflow: hidden;
+  border: none; padding: 0; background: var(--accent-soft); cursor: pointer;
+}
+.history-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.history-thumb img.cut { object-fit: contain; padding: 6%; }
+.history-thumb .ph {
+  width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 26px;
+}
+.x-btn {
+  border: none; background: none; color: var(--muted);
+  font-size: 15px; cursor: pointer; padding: 4px 8px; font-family: inherit;
 }
 
 /* ---------- misc ---------- */

@@ -67,6 +67,21 @@
     </div>
   </section>
 
+  <!-- ============ HISTORY ============ -->
+  <section id="view-history" class="view hidden">
+    <header class="view-header">
+      <div>
+        <h1>History</h1>
+        <p id="history-count" class="subtitle"></p>
+      </div>
+    </header>
+    <div id="history-list"></div>
+    <div id="history-empty" class="empty-state hidden">
+      <div class="empty-emoji">📆</div>
+      <p>No outfits logged yet.<br>Tap "I'm wearing this" on the Today tab to start your history.</p>
+    </div>
+  </section>
+
   <!-- ============ ADD / EDIT ============ -->
   <section id="view-add" class="view hidden">
     <header class="view-header">
@@ -78,6 +93,17 @@
         <img id="photo-preview" class="hidden" alt="">
         <span id="photo-hint">📷<br>Add a photo</span>
       </label>
+
+      <div class="field hidden" id="cutout-field">
+        <label class="switch-field">
+          <span>✂️ Cut out background</span>
+          <input type="checkbox" id="f-cutout" checked>
+        </label>
+        <div id="cutout-strength-wrap">
+          <input type="range" id="f-cutout-strength" min="12" max="60" step="2" value="30">
+          <div class="range-ends"><span>Precise</span><span>Aggressive</span></div>
+        </div>
+      </div>
 
       <label class="field">
         <span>Name</span>
@@ -120,6 +146,7 @@
 <nav class="tabbar">
   <button data-tab="today" class="tab active" type="button"><span class="tab-icon">☀️</span>Today</button>
   <button data-tab="closet" class="tab" type="button"><span class="tab-icon">👗</span>Closet</button>
+  <button data-tab="history" class="tab" type="button"><span class="tab-icon">📆</span>History</button>
   <button data-tab="add" class="tab" type="button"><span class="tab-icon">＋</span>Add</button>
 </nav>
 

@@ -7,48 +7,56 @@ const uid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Date.now() +
 
 const CATEGORIES = [
   { key: 'top',       label: 'Top',       emoji: '👕' },
-  { key: 'bottom',    label: 'Bottom',    emoji: '👖' },
+  { key: 'pants',     label: 'Pants',     emoji: '👖' },
+  { key: 'shorts',    label: 'Shorts',    emoji: '🩳' },
+  { key: 'skirt',     label: 'Skirt',     emoji: '🥻' },
   { key: 'dress',     label: 'Dress',     emoji: '👗' },
-  { key: 'outerwear', label: 'Outerwear', emoji: '🧥' },
+  { key: 'jacket',    label: 'Jacket',    emoji: '🧥' },
   { key: 'shoes',     label: 'Shoes',     emoji: '👟' },
   { key: 'accessory', label: 'Accessory', emoji: '🧣' },
 ];
+const BOTTOM_KEYS = ['pants', 'shorts', 'skirt'];
+const LEGACY_CATEGORY = { bottom: 'pants', outerwear: 'jacket' };
 const WARMTH_LABELS = ['Very light', 'Light', 'Medium', 'Warm', 'Very warm'];
-const catOf = key => CATEGORIES.find(c => c.key === key);
+const catOf = key => CATEGORIES.find(c => c.key === key) || { key, label: key, emoji: '🧺' };
 
 /* ================= storage ================= */
 
-const DB_NAME = 'my-closet', STORE = 'items';
+const DB_NAME = 'my-closet';
 let _db = null;
 function openDB() {
   if (_db) return Promise.resolve(_db);
   return new Promise((res, rej) => {
-    const r = indexedDB.open(DB_NAME, 1);
-    r.onupgradeneeded = () => r.result.createObjectStore(STORE, { keyPath: 'id' });
+    const r = indexedDB.open(DB_NAME, 2);
+    r.onupgradeneeded = () => {
+      const db = r.result;
+      if (!db.objectStoreNames.contains('items')) db.createObjectStore('items', { keyPath: 'id' });
+      if (!db.objectStoreNames.contains('outfits')) db.createObjectStore('outfits', { keyPath: 'id' });
+    };
     r.onsuccess = () => { _db = r.result; res(_db); };
     r.onerror = () => rej(r.error);
   });
 }
-async function dbPut(item) {
+async function dbPut(store, obj) {
   const db = await openDB();
   return new Promise((res, rej) => {
-    const tx = db.transaction(STORE, 'readwrite');
-    tx.objectStore(STORE).put(item);
+    const tx = db.transaction(store, 'readwrite');
+    tx.objectStore(store).put(obj);
     tx.oncomplete = res; tx.onerror = () => rej(tx.error);
   });
 }
-async function dbDelete(id) {
+async function dbDelete(store, id) {
   const db = await openDB();
   return new Promise((res, rej) => {
-    const tx = db.transaction(STORE, 'readwrite');
-    tx.objectStore(STORE).delete(id);
+    const tx = db.transaction(store, 'readwrite');
+    tx.objectStore(store).delete(id);
     tx.oncomplete = res; tx.onerror = () => rej(tx.error);
   });
 }
-async function dbAll() {
+async function dbAll(store) {
   const db = await openDB();
   return new Promise((res, rej) => {
-    const rq = db.transaction(STORE).objectStore(STORE).getAll();
+    const rq = db.transaction(store).objectStore(store).getAll();
     rq.onsuccess = () => res(rq.result || []); rq.onerror = () => rej(rq.error);
   });
 }
@@ -62,10 +70,13 @@ const saveSettings = () => localStorage.setItem('closet-settings', JSON.stringif
 /* ================= state ================= */
 
 let items = [];
+let outfits = [];             // {id, dateKey, at, itemIds[], weather:{tempF,code}|null}
 let closetFilter = 'all';
-let currentOutfit = null;     // array of items
+let currentOutfit = null;
 let editingId = null;
 let pendingPhoto = undefined;  // Blob | null (remove) | undefined (unchanged)
+let pendingCut = undefined;    // boolean | undefined (unchanged)
+let originalPhotoCanvas = null;
 let weather = null;
 
 const photoURLs = new Map();  // id -> objectURL
@@ -86,6 +97,16 @@ function toast(msg) {
   t._h = setTimeout(() => t.classList.add('hidden'), 2200);
 }
 
+function localDateKey(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function dateLabel(key) {
+  if (key === localDateKey()) return 'Today';
+  if (key === localDateKey(new Date(Date.now() - 864e5))) return 'Yesterday';
+  const [y, m, d] = key.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
 /* ================= tabs ================= */
 
 function showView(name) {
@@ -95,6 +116,7 @@ function showView(name) {
   window.scrollTo(0, 0);
   if (name === 'closet') renderCloset();
   if (name === 'today') renderToday();
+  if (name === 'history') renderHistory();
   if (name === 'add' && editingId === null) resetForm();
 }
 $$('.tab').forEach(t => t.addEventListener('click', () => { editingId = null; showView(t.dataset.tab); }));
@@ -204,7 +226,7 @@ function targetWarmth(w) {
 function scoreItem(item, target, wet) {
   let s = 4 - Math.abs(item.warmth - target);
   if (item.favorite) s += 0.7;
-  if (wet && (item.category === 'shoes' || item.category === 'outerwear')) {
+  if (wet && (item.category === 'shoes' || item.category === 'jacket')) {
     s += item.waterproof ? 1.3 : -1.2;
   }
   if (item.lastWorn && Date.now() - item.lastWorn < 2 * 864e5) s -= 1.5;
@@ -227,7 +249,8 @@ function buildOutfit() {
   const outfit = [];
   const missing = [];
 
-  const tops = by('top'), bottoms = by('bottom');
+  const tops = by('top');
+  const bottoms = items.filter(i => BOTTOM_KEYS.includes(i.category));
   // dresses are optional, so only consider ones that actually suit today's temperature
   const dresses = by('dress').filter(d => Math.abs(d.warmth - target) <= 1);
   const useDress = dresses.length && (!(tops.length && bottoms.length) || Math.random() < 0.33);
@@ -236,16 +259,16 @@ function buildOutfit() {
   } else if (tops.length || bottoms.length) {
     const top = pickBest(tops, target, wet);
     const bottom = pickBest(bottoms, target, wet);
-    if (top) outfit.push(top); else missing.push('top');
-    if (bottom) outfit.push(bottom); else missing.push('bottom');
+    if (top) outfit.push(top); else missing.push('a top');
+    if (bottom) outfit.push(bottom); else missing.push('bottoms');
   } else {
-    missing.push('top', 'bottom');
+    missing.push('a top', 'bottoms');
   }
 
   const needsOuter = planT < 62 || (wet && planT < 75);
   if (needsOuter) {
-    const outer = pickBest(by('outerwear'), Math.max(target, 3), wet);
-    if (outer) outfit.push(outer); else missing.push('outerwear');
+    const outer = pickBest(by('jacket'), Math.max(target, 3), wet);
+    if (outer) outfit.push(outer); else missing.push('a jacket');
   }
 
   const shoes = pickBest(by('shoes'), target, wet);
@@ -266,16 +289,20 @@ function outfitNote() {
   if (weather.windMph >= 20) bits.push('💨 Quite windy out there');
   if (weather.hiF - weather.loF >= 25) bits.push('🌗 Big temperature swing today — layers are your friend');
   if (currentOutfit.missing.length) {
-    const names = currentOutfit.missing.map(m => catOf(m).label.toLowerCase()).join(', ');
-    bits.push(`👀 Your closet has no good match for: ${names}`);
+    bits.push(`👀 Your closet has no good match for: ${currentOutfit.missing.join(', ')}`);
   }
   return bits.join(' · ');
+}
+
+function itemCardHTML(item) {
+  const url = photoURL(item);
+  const cut = item.cutout ? ' class="cut"' : '';
+  return url ? `<img src="${url}"${cut} alt="">` : `<div class="ph">${catOf(item.category).emoji}</div>`;
 }
 
 function renderOutfit() {
   const grid = $('#outfit-grid');
   const note = $('#outfit-note');
-  const wearBtn = $('#wearing-btn');
   const empty = $('#today-empty');
   const hasItems = items.length > 0;
 
@@ -283,33 +310,51 @@ function renderOutfit() {
   empty.classList.toggle('hidden', hasItems);
   grid.innerHTML = '';
   note.classList.add('hidden');
-  wearBtn.classList.add('hidden');
+  $('#wearing-btn').classList.add('hidden');
   if (!hasItems || !weather) return;
 
   buildOutfit();
   if (!currentOutfit) return;
 
   for (const item of currentOutfit.pieces) {
-    const url = photoURL(item);
     const card = document.createElement('button');
     card.className = 'outfit-card';
     card.type = 'button';
-    card.innerHTML = `
-      ${url ? `<img src="${url}" alt="">` : `<div class="ph">${catOf(item.category).emoji}</div>`}
+    card.innerHTML = `${itemCardHTML(item)}
       <div class="cap"><b>${esc(item.name)}</b><span>${catOf(item.category).label}</span></div>`;
     card.addEventListener('click', () => openDetail(item.id));
     grid.appendChild(card);
   }
   const n = outfitNote();
   if (n) { note.textContent = n; note.classList.remove('hidden'); }
-  if (currentOutfit.pieces.length) wearBtn.classList.remove('hidden');
+  updateWearBtn();
+}
+
+function updateWearBtn() {
+  const btn = $('#wearing-btn');
+  if (!currentOutfit || !currentOutfit.pieces.length) { btn.classList.add('hidden'); return; }
+  btn.classList.remove('hidden');
+  const logged = outfits.some(o => o.dateKey === localDateKey());
+  btn.textContent = logged ? "✓ I'm wearing this (update today's log)" : "✓ I'm wearing this";
 }
 
 $('#shuffle-btn').addEventListener('click', renderOutfit);
 $('#wearing-btn').addEventListener('click', async () => {
-  if (!currentOutfit) return;
-  for (const p of currentOutfit.pieces) { p.lastWorn = Date.now(); await dbPut(p); }
-  toast('Looking good! Logged as worn 👌');
+  if (!currentOutfit || !currentOutfit.pieces.length) return;
+  const dateKey = localDateKey();
+  const existing = outfits.find(o => o.dateKey === dateKey);
+  const record = {
+    id: existing ? existing.id : uid(),
+    dateKey,
+    at: Date.now(),
+    itemIds: currentOutfit.pieces.map(p => p.id),
+    weather: weather ? { tempF: weather.tempF, code: weather.code } : null,
+  };
+  await dbPut('outfits', record);
+  if (existing) outfits[outfits.indexOf(existing)] = record; else outfits.push(record);
+  for (const p of currentOutfit.pieces) { p.lastWorn = Date.now(); await dbPut('items', p); }
+  updateWearBtn();
+  toast('Logged to your outfit history 👌');
 });
 
 async function renderToday() {
@@ -317,6 +362,54 @@ async function renderToday() {
   $('#today-greeting').textContent = h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
   await renderWeather();
   renderOutfit();
+}
+
+/* ================= outfit history ================= */
+
+function renderHistory() {
+  const list = $('#history-list');
+  list.innerHTML = '';
+  const sorted = [...outfits].sort((a, b) => b.dateKey.localeCompare(a.dateKey) || b.at - a.at);
+  $('#history-empty').classList.toggle('hidden', sorted.length > 0);
+  $('#history-count').textContent = sorted.length
+    ? `${sorted.length} outfit${sorted.length === 1 ? '' : 's'} logged` : '';
+
+  for (const o of sorted) {
+    const entry = document.createElement('div');
+    entry.className = 'history-entry';
+
+    const pieces = o.itemIds.map(id => items.find(i => i.id === id)).filter(Boolean);
+    const w = o.weather ? `${wmoInfo(o.weather.code).emoji} ${showT(o.weather.tempF)}` : '';
+    entry.innerHTML = `
+      <div class="history-head">
+        <div>
+          <span class="history-date">${dateLabel(o.dateKey)}</span>
+          <span class="history-meta">${w}</span>
+        </div>
+        <button class="x-btn" type="button" aria-label="Delete entry">✕</button>
+      </div>
+      <div class="history-thumbs"></div>
+      ${pieces.length ? '' : '<p class="subtitle">These items are no longer in your closet.</p>'}`;
+
+    const thumbs = entry.querySelector('.history-thumbs');
+    for (const p of pieces) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'history-thumb';
+      b.title = p.name;
+      b.innerHTML = itemCardHTML(p);
+      b.addEventListener('click', () => openDetail(p.id));
+      thumbs.appendChild(b);
+    }
+    entry.querySelector('.x-btn').addEventListener('click', async () => {
+      if (!confirm(`Delete the outfit logged ${dateLabel(o.dateKey).toLowerCase()}?`)) return;
+      await dbDelete('outfits', o.id);
+      outfits = outfits.filter(x => x.id !== o.id);
+      renderHistory();
+      toast('Entry deleted');
+    });
+    list.appendChild(entry);
+  }
 }
 
 /* ================= closet ================= */
@@ -348,12 +441,10 @@ function renderCloset() {
   $('#closet-count').textContent = `${items.length} item${items.length === 1 ? '' : 's'}`;
   $('#closet-empty').classList.toggle('hidden', list.length > 0);
   for (const item of list) {
-    const url = photoURL(item);
     const cell = document.createElement('button');
     cell.type = 'button';
     cell.className = 'closet-cell';
-    cell.innerHTML = `
-      ${url ? `<img src="${url}" alt="">` : `<div class="ph">${catOf(item.category).emoji}</div>`}
+    cell.innerHTML = `${itemCardHTML(item)}
       ${item.favorite ? '<span class="fav-badge">♥</span>' : ''}
       <span class="nm">${esc(item.name)}</span>`;
     cell.addEventListener('click', () => openDetail(item.id));
@@ -370,6 +461,7 @@ function openDetail(id) {
   const url = photoURL(item);
   const img = $('#d-photo');
   img.classList.toggle('hidden', !url);
+  img.classList.toggle('cut', !!item.cutout);
   if (url) img.src = url;
   $('#d-name').textContent = item.name;
   const meta = [catOf(item.category).label, WARMTH_LABELS[item.warmth - 1]];
@@ -383,13 +475,183 @@ $('#d-close').addEventListener('click', () => $('#item-dialog').close());
 $('#d-fav').addEventListener('click', async () => {
   const item = items.find(i => i.id === detailId);
   item.favorite = !item.favorite;
-  await dbPut(item);
+  await dbPut('items', item);
   $('#d-fav').classList.toggle('fav-on', item.favorite);
   renderCloset();
 });
 $('#d-edit').addEventListener('click', () => {
   $('#item-dialog').close();
   openEdit(detailId);
+});
+
+/* ================= photo processing ================= */
+
+function fileToCanvas(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const MAX = 900;
+      const scale = Math.min(1, MAX / Math.max(img.width, img.height));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(img.src);
+      resolve(canvas);
+    };
+    img.onerror = () => reject(new Error('bad image'));
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+/* Background cutout: flood-fill from the photo borders, adaptive to gradients,
+   then crop to the garment. Runs entirely on-device. */
+function cutOutBackground(src, tol) {
+  const w = src.width, h = src.height;
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(src, 0, 0);
+  const imgd = ctx.getImageData(0, 0, w, h);
+  const d = imgd.data;
+
+  // mean border color as the global background reference
+  let rm = 0, gm = 0, bm = 0, n = 0;
+  const addMean = (x, y) => { const i = (y * w + x) * 4; rm += d[i]; gm += d[i + 1]; bm += d[i + 2]; n++; };
+  for (let x = 0; x < w; x++) { addMean(x, 0); addMean(x, h - 1); }
+  for (let y = 0; y < h; y++) { addMean(0, y); addMean(w - 1, y); }
+  rm /= n; gm /= n; bm /= n;
+
+  const dist2 = (i, r, g, b) => {
+    const dr = d[i] - r, dg = d[i + 1] - g, db = d[i + 2] - b;
+    return dr * dr + dg * dg + db * db;
+  };
+  const t2 = tol * tol * 3;
+
+  const bg = new Uint8Array(w * h);
+  const qx = new Int32Array(w * h), qy = new Int32Array(w * h);
+  let qs = 0, qe = 0;
+  const seed = (x, y) => {
+    const p = y * w + x;
+    if (!bg[p] && dist2(p * 4, rm, gm, bm) < t2 * 2.2) { bg[p] = 1; qx[qe] = x; qy[qe] = y; qe++; }
+  };
+  for (let x = 0; x < w; x++) { seed(x, 0); seed(x, h - 1); }
+  for (let y = 0; y < h; y++) { seed(0, y); seed(w - 1, y); }
+
+  while (qs < qe) {
+    const x = qx[qs], y = qy[qs]; qs++;
+    const ci = (y * w + x) * 4;
+    for (const [nx, ny] of [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]]) {
+      if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+      const p = ny * w + nx;
+      if (bg[p]) continue;
+      const i4 = p * 4;
+      // background if close to the overall border color, or reachable via a very
+      // small step from a neighboring bg pixel (shadows/gradients) — the step must
+      // be tiny and stay loosely near the border color, or the fill leaks through
+      // compression-softened garment edges
+      const nearGlobal = dist2(i4, rm, gm, bm);
+      if (nearGlobal < t2 * 1.8 ||
+          (nearGlobal < t2 * 8 && dist2(i4, d[ci], d[ci + 1], d[ci + 2]) < t2 * 0.35)) {
+        bg[p] = 1; qx[qe] = nx; qy[qe] = ny; qe++;
+      }
+    }
+  }
+
+  // sanity check: a real cutout removes some background but not the whole photo
+  const removed = qe / (w * h);
+  if (removed < 0.08 || removed > 0.95) return null;
+
+  // despeckle: drop small disconnected foreground islands (shadow specks, lint)
+  // but keep anything comparable to the main garment (e.g. a pair of shoes)
+  const comp = new Int32Array(w * h);
+  const sizes = [0];
+  let nc = 0;
+  for (let p0 = 0; p0 < w * h; p0++) {
+    if (bg[p0] || comp[p0]) continue;
+    nc++;
+    let size = 0;
+    qs = 0; qe = 0;
+    comp[p0] = nc; qx[qe] = p0 % w; qy[qe] = (p0 / w) | 0; qe++;
+    while (qs < qe) {
+      const x = qx[qs], y = qy[qs]; qs++;
+      size++;
+      for (const [nx, ny] of [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]]) {
+        if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+        const p = ny * w + nx;
+        if (bg[p] || comp[p]) continue;
+        comp[p] = nc; qx[qe] = nx; qy[qe] = ny; qe++;
+      }
+    }
+    sizes.push(size);
+  }
+  const maxSize = Math.max(...sizes);
+  for (let p = 0; p < w * h; p++) {
+    if (!bg[p] && sizes[comp[p]] < maxSize * 0.05) bg[p] = 1;
+  }
+
+  // apply transparency, soften edges, find garment bounding box
+  let minX = w, minY = h, maxX = -1, maxY = -1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const p = y * w + x;
+      if (bg[p]) { d[p * 4 + 3] = 0; continue; }
+      const edge = (x > 0 && bg[p - 1]) || (x < w - 1 && bg[p + 1]) || (y > 0 && bg[p - w]) || (y < h - 1 && bg[p + w]);
+      if (edge) d[p * 4 + 3] = 150;
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+    }
+  }
+  if (maxX < 0) return null;
+  ctx.putImageData(imgd, 0, 0);
+
+  const pad = Math.round(Math.max(maxX - minX, maxY - minY) * 0.05) + 4;
+  minX = Math.max(0, minX - pad); minY = Math.max(0, minY - pad);
+  maxX = Math.min(w - 1, maxX + pad); maxY = Math.min(h - 1, maxY + pad);
+  const cw = maxX - minX + 1, ch = maxY - minY + 1;
+  const out = document.createElement('canvas');
+  out.width = cw; out.height = ch;
+  out.getContext('2d').drawImage(canvas, minX, minY, cw, ch, 0, 0, cw, ch);
+  return out;
+}
+
+async function processPhoto() {
+  if (!originalPhotoCanvas) return;
+  const wantCut = $('#f-cutout').checked;
+  let canvas = originalPhotoCanvas;
+  let isCut = false;
+  if (wantCut) {
+    const res = cutOutBackground(originalPhotoCanvas, +$('#f-cutout-strength').value);
+    if (res) { canvas = res; isCut = true; }
+    else toast("Couldn't isolate the item — keeping the full photo");
+  }
+  pendingPhoto = await new Promise(r => canvas.toBlob(r, isCut ? 'image/png' : 'image/jpeg', 0.82));
+  pendingCut = isCut;
+  const prev = $('#photo-preview');
+  if (prev.src) URL.revokeObjectURL(prev.src);
+  prev.src = URL.createObjectURL(pendingPhoto);
+  prev.classList.toggle('cut', isCut);
+  prev.classList.remove('hidden');
+  $('#photo-hint').classList.add('hidden');
+  $('#cutout-strength-wrap').classList.toggle('hidden', !wantCut);
+}
+
+$('#photo-input').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  try {
+    originalPhotoCanvas = await fileToCanvas(file);
+    $('#cutout-field').classList.remove('hidden');
+    await processPhoto();
+  } catch {
+    toast("Couldn't read that photo");
+  }
+});
+$('#f-cutout').addEventListener('change', processPhoto);
+let strengthTimer = null;
+$('#f-cutout-strength').addEventListener('input', () => {
+  clearTimeout(strengthTimer);
+  strengthTimer = setTimeout(processPhoto, 250);
 });
 
 /* ================= add / edit form ================= */
@@ -412,14 +674,19 @@ const selectedCategory = () => $('#f-category .chip.active')?.dataset.key || nul
 function resetForm() {
   editingId = null;
   pendingPhoto = undefined;
+  pendingCut = undefined;
+  originalPhotoCanvas = null;
   $('#add-title').textContent = 'Add item';
   $('#item-form').reset();
   $('#f-warmth').value = 3;
+  $('#f-cutout').checked = true;
+  $('#f-cutout-strength').value = 30;
   $('#warmth-label').textContent = WARMTH_LABELS[2];
   renderCategoryChips(null);
   $('#photo-preview').classList.add('hidden');
   $('#photo-preview').removeAttribute('src');
   $('#photo-hint').classList.remove('hidden');
+  $('#cutout-field').classList.add('hidden');
   $('#delete-btn').classList.add('hidden');
   $('#save-btn').textContent = 'Save to closet';
 }
@@ -440,6 +707,7 @@ function openEdit(id) {
   const url = photoURL(item);
   if (url) {
     $('#photo-preview').src = url;
+    $('#photo-preview').classList.toggle('cut', !!item.cutout);
     $('#photo-preview').classList.remove('hidden');
     $('#photo-hint').classList.add('hidden');
   }
@@ -450,38 +718,6 @@ function openEdit(id) {
 
 $('#f-warmth').addEventListener('input', e => {
   $('#warmth-label').textContent = WARMTH_LABELS[e.target.value - 1];
-});
-
-function resizePhoto(file) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => {
-      const MAX = 900;
-      const scale = Math.min(1, MAX / Math.max(img.width, img.height));
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.round(img.width * scale);
-      canvas.height = Math.round(img.height * scale);
-      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-      canvas.toBlob(b => b ? resolve(b) : reject(new Error('encode failed')), 'image/jpeg', 0.82);
-      URL.revokeObjectURL(img.src);
-    };
-    img.onerror = () => reject(new Error('bad image'));
-    img.src = URL.createObjectURL(file);
-  });
-}
-
-$('#photo-input').addEventListener('change', async e => {
-  const file = e.target.files[0];
-  if (!file) return;
-  try {
-    pendingPhoto = await resizePhoto(file);
-    const url = URL.createObjectURL(pendingPhoto);
-    $('#photo-preview').src = url;
-    $('#photo-preview').classList.remove('hidden');
-    $('#photo-hint').classList.add('hidden');
-  } catch {
-    toast("Couldn't read that photo");
-  }
 });
 
 $('#item-form').addEventListener('submit', async e => {
@@ -498,13 +734,14 @@ $('#item-form').addEventListener('submit', async e => {
     favorite: $('#f-favorite').checked,
     notes: $('#f-notes').value.trim(),
     photo: pendingPhoto !== undefined ? pendingPhoto : (existing ? existing.photo : null),
+    cutout: pendingCut !== undefined ? pendingCut : (existing ? !!existing.cutout : false),
     createdAt: existing ? existing.createdAt : Date.now(),
     lastWorn: existing ? existing.lastWorn : null,
   };
-  await dbPut(item);
+  await dbPut('items', item);
   dropPhotoURL(item.id);
   if (existing) items[items.indexOf(existing)] = item; else items.push(item);
-  toast(existing ? 'Saved ✓' : `Added to closet ✓`);
+  toast(existing ? 'Saved ✓' : 'Added to closet ✓');
   editingId = null;
   resetForm();
   showView('closet');
@@ -513,7 +750,7 @@ $('#item-form').addEventListener('submit', async e => {
 $('#delete-btn').addEventListener('click', async () => {
   if (!editingId) return;
   if (!confirm('Delete this item from your closet?')) return;
-  await dbDelete(editingId);
+  await dbDelete('items', editingId);
   dropPhotoURL(editingId);
   items = items.filter(i => i.id !== editingId);
   editingId = null;
@@ -539,17 +776,20 @@ async function setLocation(loc) {
   await renderToday();
 }
 
+async function reverseGeocodeName(lat, lon) {
+  try {
+    const r = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=en`);
+    const j = await r.json();
+    return j.city || j.locality || 'My location';
+  } catch { return 'My location'; }
+}
+
 $('#use-gps').addEventListener('click', () => {
   if (!navigator.geolocation) { toast('Location not available'); return; }
   $('#use-gps').textContent = 'Locating…';
   navigator.geolocation.getCurrentPosition(async pos => {
     const { latitude: lat, longitude: lon } = pos.coords;
-    let name = 'My location';
-    try {
-      const r = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=en`);
-      const j = await r.json();
-      name = j.city || j.locality || name;
-    } catch { /* keep generic name */ }
+    const name = await reverseGeocodeName(lat, lon);
     $('#use-gps').textContent = '📍 Use my current location';
     setLocation({ lat: +lat.toFixed(3), lon: +lon.toFixed(3), name });
   }, () => {
@@ -608,10 +848,11 @@ $('#export-btn').addEventListener('click', async () => {
   for (const i of items) {
     out.push({ ...i, photo: i.photo ? await blobToDataURL(i.photo) : null });
   }
-  const blob = new Blob([JSON.stringify({ version: 1, exportedAt: new Date().toISOString(), items: out })], { type: 'application/json' });
+  const payload = { version: 2, exportedAt: new Date().toISOString(), items: out, outfits };
+  const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `my-closet-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  a.download = `my-closet-backup-${localDateKey()}.json`;
   a.click();
   URL.revokeObjectURL(a.href);
   toast('Backup downloaded');
@@ -625,11 +866,17 @@ $('#import-input').addEventListener('change', async e => {
     let n = 0;
     for (const raw of j.items || []) {
       const item = { ...raw, photo: raw.photo ? await dataURLToBlob(raw.photo) : null };
-      await dbPut(item);
+      if (LEGACY_CATEGORY[item.category]) item.category = LEGACY_CATEGORY[item.category];
+      await dbPut('items', item);
       dropPhotoURL(item.id);
       const idx = items.findIndex(i => i.id === item.id);
       if (idx >= 0) items[idx] = item; else items.push(item);
       n++;
+    }
+    for (const o of j.outfits || []) {
+      await dbPut('outfits', o);
+      const idx = outfits.findIndex(x => x.id === o.id);
+      if (idx >= 0) outfits[idx] = o; else outfits.push(o);
     }
     toast(`Imported ${n} item${n === 1 ? '' : 's'}`);
     renderCloset();
@@ -642,7 +889,15 @@ $('#import-input').addEventListener('change', async e => {
 /* ================= init ================= */
 
 async function init() {
-  items = await dbAll();
+  items = await dbAll('items');
+  outfits = await dbAll('outfits');
+  // migrate categories from the v1 scheme (bottom/outerwear)
+  for (const i of items) {
+    if (LEGACY_CATEGORY[i.category]) {
+      i.category = LEGACY_CATEGORY[i.category];
+      await dbPut('items', i);
+    }
+  }
   renderCategoryChips(null);
   showView('today');
   if (navigator.storage?.persist) navigator.storage.persist();
@@ -651,12 +906,7 @@ async function init() {
   if (!settings.location && navigator.geolocation) {
     navigator.geolocation.getCurrentPosition(async pos => {
       const { latitude: lat, longitude: lon } = pos.coords;
-      let name = 'My location';
-      try {
-        const r = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=en`);
-        const j = await r.json();
-        name = j.city || j.locality || name;
-      } catch { /* keep generic name */ }
+      const name = await reverseGeocodeName(lat, lon);
       settings.location = { lat: +lat.toFixed(3), lon: +lon.toFixed(3), name };
       saveSettings();
       renderToday();
