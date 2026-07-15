@@ -233,6 +233,8 @@ dialog img.cut { object-fit: contain; padding: 5%; background: var(--accent-soft
   border-radius: 9px; padding: 7px 6px; font-family: inherit; font-size: 13px;
 }
 .oi-check { margin-top: 8px; }
+.oi-newfields { display: flex; flex-direction: column; gap: 6px; }
+.log-photo-btn { width: 100%; margin: 2px 0 4px; }
 .oi-add-btn { background: var(--accent); color: #fff; border-color: var(--accent); }
 
 /* ---------- outfit calendar ---------- */

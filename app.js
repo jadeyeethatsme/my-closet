@@ -87,6 +87,7 @@ function photoURL(item) {
 }
 function dropPhotoURL(id) {
   if (photoURLs.has(id)) { URL.revokeObjectURL(photoURLs.get(id)); photoURLs.delete(id); }
+  sigCache.delete(id);
 }
 
 function toast(msg) {
@@ -418,10 +419,10 @@ $('#cal-next').addEventListener('click', () => { calMonth = new Date(calMonth.ge
 let logDateKey = null;
 let logSelection = new Set();
 
-function openLogDialog(dateKey) {
+function openLogDialog(dateKey, preset = null) {
   logDateKey = dateKey;
   const existing = outfitFor(dateKey);
-  logSelection = new Set((existing?.itemIds || []).filter(id => items.some(i => i.id === id)));
+  logSelection = new Set(preset || (existing?.itemIds || []).filter(id => items.some(i => i.id === id)));
   $('#log-title').textContent = `${existing ? 'Outfit' : 'Log outfit'} · ${dateLabel(dateKey)}`;
   const w = existing?.weather ? `${wmoInfo(existing.weather.code).emoji} ${showT(existing.weather.tempF)} that day · ` : '';
   $('#log-sub').textContent = items.length
@@ -828,8 +829,97 @@ async function segmentOutfit(file, onStatus) {
   return found;
 }
 
-let oiRows = [];  // [{piece, row}]
-$('#outfit-import-btn').addEventListener('click', () => $('#outfit-photo-input').click());
+/* ---------- visual matching: compare a detected piece to closet items ---------- */
+
+const sigCache = new Map();  // itemId -> signature | null
+const MATCH_THRESHOLD = 0.2; // below this distance a match is preselected
+const MATCH_GROUPS = {       // which closet categories a detected piece may match
+  top: ['top', 'jacket'],
+  pants: ['pants', 'shorts'],
+  skirt: ['skirt'],
+  dress: ['dress'],
+  shoes: ['shoes'],
+  accessory: ['accessory'],
+};
+
+/* coarse color signature: 4x4 grid of mean RGB + 27-bin histogram over visible pixels */
+function canvasSignature(source, hasAlpha) {
+  const S = 32, G = 4;
+  const c = document.createElement('canvas'); c.width = S; c.height = S;
+  const ctx = c.getContext('2d');
+  ctx.drawImage(source, 0, 0, S, S);
+  const d = ctx.getImageData(0, 0, S, S).data;
+  const grid = new Float32Array(G * G * 3);
+  const gcount = new Float32Array(G * G);
+  const hist = new Float32Array(27);
+  let total = 0;
+  // full photos (no alpha): sample the center region to dodge the background
+  const lo = hasAlpha ? 0 : 5, hi = hasAlpha ? S : S - 5;
+  for (let y = lo; y < hi; y++) {
+    for (let x = lo; x < hi; x++) {
+      const i = (y * S + x) * 4;
+      if (d[i + 3] < 128) continue;
+      const r = d[i], g = d[i + 1], b = d[i + 2];
+      const gi = ((y * G / S) | 0) * G + ((x * G / S) | 0);
+      grid[gi * 3] += r; grid[gi * 3 + 1] += g; grid[gi * 3 + 2] += b;
+      gcount[gi]++;
+      hist[((r / 86) | 0) * 9 + ((g / 86) | 0) * 3 + ((b / 86) | 0)]++;
+      total++;
+    }
+  }
+  if (total < 20) return null;
+  for (let i = 0; i < G * G; i++) {
+    const n = gcount[i] || 1;
+    grid[i * 3] /= n * 255; grid[i * 3 + 1] /= n * 255; grid[i * 3 + 2] /= n * 255;
+  }
+  for (let i = 0; i < 27; i++) hist[i] /= total;
+  return { grid, hist };
+}
+
+async function itemSignature(item) {
+  if (sigCache.has(item.id)) return sigCache.get(item.id);
+  let sig = null;
+  if (item.photo) {
+    try {
+      const bmp = await createImageBitmap(item.photo);
+      sig = canvasSignature(bmp, !!item.cutout);
+      bmp.close?.();
+    } catch { /* unreadable photo — treat as unmatchable */ }
+  }
+  sigCache.set(item.id, sig);
+  return sig;
+}
+
+function sigDist(a, b) {
+  if (!a || !b) return Infinity;
+  let g = 0;
+  for (let i = 0; i < a.grid.length; i++) { const t = a.grid[i] - b.grid[i]; g += t * t; }
+  let h = 0;
+  for (let i = 0; i < a.hist.length; i++) { const t = a.hist[i] - b.hist[i]; h += t * t; }
+  return 0.6 * Math.sqrt(g / a.grid.length) + 0.4 * Math.sqrt(h);
+}
+
+/* closet candidates for a detected piece, best match first (photoless items last) */
+async function matchCandidates(piece) {
+  const groups = MATCH_GROUPS[piece.category] || [piece.category];
+  const pieceSig = canvasSignature(piece.canvas, true);
+  const cands = [];
+  for (const item of items.filter(i => groups.includes(i.category))) {
+    cands.push({ item, dist: sigDist(pieceSig, await itemSignature(item)) });
+  }
+  return cands.sort((a, b) => a.dist - b.dist).slice(0, 8);
+}
+
+/* ---------- import / log-from-photo dialog ---------- */
+
+let oiRows = [];          // [{piece, row}]
+let oiMode = 'closet';    // 'closet' = add items to closet, 'log' = log the day's outfit
+$('#outfit-import-btn').addEventListener('click', () => { oiMode = 'closet'; $('#outfit-photo-input').click(); });
+$('#log-photo-btn').addEventListener('click', () => {
+  oiMode = 'log';
+  $('#log-dialog').close();
+  $('#outfit-photo-input').click();
+});
 $('#oi-cancel').addEventListener('click', () => $('#outfit-import-dialog').close());
 
 $('#outfit-photo-input').addEventListener('change', async e => {
@@ -839,6 +929,8 @@ $('#outfit-photo-input').addEventListener('change', async e => {
   const status = $('#oi-status'), results = $('#oi-results');
   results.innerHTML = '';
   oiRows = [];
+  $('#oi-title').textContent = oiMode === 'log' ? `Outfit · ${dateLabel(logDateKey || localDateKey())}` : 'Outfit import';
+  $('#oi-add').textContent = oiMode === 'log' ? 'Continue' : 'Add to closet';
   $('#oi-add').classList.add('hidden');
   status.textContent = 'Reading photo…';
   $('#outfit-import-dialog').showModal();
@@ -848,23 +940,41 @@ $('#outfit-photo-input').addEventListener('change', async e => {
       status.textContent = "I couldn't find any clothing in that photo. Try a full-body photo in good light.";
       return;
     }
-    status.textContent = `Found ${found.length} piece${found.length === 1 ? '' : 's'} — tweak and uncheck as needed.`;
+    status.textContent = oiMode === 'log'
+      ? `Found ${found.length} piece${found.length === 1 ? '' : 's'} — matched to your closet where I could.`
+      : `Found ${found.length} piece${found.length === 1 ? '' : 's'} — tweak and uncheck as needed.`;
     for (const piece of found) {
+      const matches = oiMode === 'log' ? await matchCandidates(piece) : [];
+      const matchHTML = oiMode === 'log' ? `
+        <select class="oi-select oi-match">
+          ${matches.map(m => `<option value="${m.item.id}">✓ ${esc(m.item.name)}</option>`).join('')}
+          <option value="__new__">➕ Add as new item</option>
+        </select>` : '';
       const row = document.createElement('div');
       row.className = 'oi-row';
       row.innerHTML = `
         <div class="oi-thumb"></div>
         <div class="oi-main">
-          <input type="text" class="oi-name" value="${esc(piece.name)}" autocomplete="off">
-          <div class="oi-selects">
-            <select class="oi-select oi-cat">${CATEGORIES.map(c =>
-              `<option value="${c.key}"${c.key === piece.category ? ' selected' : ''}>${c.emoji} ${c.label}</option>`).join('')}</select>
-            <select class="oi-select oi-warmth">${WARMTH_LABELS.map((l, i) =>
-              `<option value="${i + 1}"${i === 2 ? ' selected' : ''}>${l}</option>`).join('')}</select>
+          ${matchHTML}
+          <div class="oi-newfields">
+            <input type="text" class="oi-name" value="${esc(piece.name)}" autocomplete="off">
+            <div class="oi-selects">
+              <select class="oi-select oi-cat">${CATEGORIES.map(c =>
+                `<option value="${c.key}"${c.key === piece.category ? ' selected' : ''}>${c.emoji} ${c.label}</option>`).join('')}</select>
+              <select class="oi-select oi-warmth">${WARMTH_LABELS.map((l, i) =>
+                `<option value="${i + 1}"${i === 2 ? ' selected' : ''}>${l}</option>`).join('')}</select>
+            </div>
           </div>
         </div>
         <input type="checkbox" class="oi-check" checked>`;
       row.querySelector('.oi-thumb').appendChild(piece.canvas);
+      if (oiMode === 'log') {
+        const sel = row.querySelector('.oi-match');
+        sel.value = matches.length && matches[0].dist < MATCH_THRESHOLD ? matches[0].item.id : '__new__';
+        const sync = () => row.querySelector('.oi-newfields').classList.toggle('hidden', sel.value !== '__new__');
+        sel.addEventListener('change', sync);
+        sync();
+      }
       results.appendChild(row);
       oiRows.push({ piece, row });
     }
@@ -878,10 +988,10 @@ $('#oi-add').addEventListener('click', async () => {
   const btn = $('#oi-add');
   if (btn.disabled) return;
   btn.disabled = true;
-  btn.textContent = 'Adding…';
-  let n = 0;
-  for (const { piece, row } of oiRows) {
-    if (!row.querySelector('.oi-check').checked) continue;
+  const btnLabel = btn.textContent;
+  btn.textContent = 'Working…';
+
+  async function createItemFromRow(piece, row) {
     const blob = await new Promise(r => piece.canvas.toBlob(r, 'image/png'));
     const item = {
       id: uid(),
@@ -898,10 +1008,34 @@ $('#oi-add').addEventListener('click', async () => {
     };
     await dbPut('items', item);
     items.push(item);
+    return item;
+  }
+
+  if (oiMode === 'log') {
+    const ids = new Set(logSelection);
+    let added = 0;
+    for (const { piece, row } of oiRows) {
+      if (!row.querySelector('.oi-check').checked) continue;
+      const choice = row.querySelector('.oi-match').value;
+      if (choice === '__new__') { ids.add((await createItemFromRow(piece, row)).id); added++; }
+      else ids.add(choice);
+    }
+    btn.disabled = false;
+    btn.textContent = btnLabel;
+    $('#outfit-import-dialog').close();
+    if (added) toast(`Added ${added} new item${added === 1 ? '' : 's'} to your closet`);
+    openLogDialog(logDateKey || localDateKey(), [...ids]);
+    return;
+  }
+
+  let n = 0;
+  for (const { piece, row } of oiRows) {
+    if (!row.querySelector('.oi-check').checked) continue;
+    await createItemFromRow(piece, row);
     n++;
   }
   btn.disabled = false;
-  btn.textContent = 'Add to closet';
+  btn.textContent = btnLabel;
   $('#outfit-import-dialog').close();
   if (n) { toast(`Added ${n} item${n === 1 ? '' : 's'} to your closet ✓`); showView('closet'); }
 });
