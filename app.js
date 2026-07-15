@@ -116,7 +116,7 @@ function showView(name) {
   window.scrollTo(0, 0);
   if (name === 'closet') renderCloset();
   if (name === 'today') renderToday();
-  if (name === 'history') renderHistory();
+  if (name === 'history') renderCalendar();
   if (name === 'add' && editingId === null) resetForm();
 }
 $$('.tab').forEach(t => t.addEventListener('click', () => { editingId = null; showView(t.dataset.tab); }));
@@ -307,6 +307,7 @@ function renderOutfit() {
   const hasItems = items.length > 0;
 
   $('#shuffle-btn').classList.toggle('hidden', !hasItems || !weather);
+  $('#log-btn').classList.toggle('hidden', !hasItems);
   empty.classList.toggle('hidden', hasItems);
   grid.innerHTML = '';
   note.classList.add('hidden');
@@ -364,53 +365,134 @@ async function renderToday() {
   renderOutfit();
 }
 
-/* ================= outfit history ================= */
+/* ================= outfit calendar ================= */
 
-function renderHistory() {
-  const list = $('#history-list');
-  list.innerHTML = '';
-  const sorted = [...outfits].sort((a, b) => b.dateKey.localeCompare(a.dateKey) || b.at - a.at);
-  $('#history-empty').classList.toggle('hidden', sorted.length > 0);
-  $('#history-count').textContent = sorted.length
-    ? `${sorted.length} outfit${sorted.length === 1 ? '' : 's'} logged` : '';
+let calMonth = (() => { const n = new Date(); return new Date(n.getFullYear(), n.getMonth(), 1); })();
+const outfitFor = key => outfits.find(o => o.dateKey === key);
 
-  for (const o of sorted) {
-    const entry = document.createElement('div');
-    entry.className = 'history-entry';
+function renderCalendar() {
+  const y = calMonth.getFullYear(), m = calMonth.getMonth();
+  const now = new Date();
+  $('#cal-title').textContent = calMonth.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  $('#cal-next').disabled = y === now.getFullYear() && m === now.getMonth();
 
-    const pieces = o.itemIds.map(id => items.find(i => i.id === id)).filter(Boolean);
-    const w = o.weather ? `${wmoInfo(o.weather.code).emoji} ${showT(o.weather.tempF)}` : '';
-    entry.innerHTML = `
-      <div class="history-head">
-        <div>
-          <span class="history-date">${dateLabel(o.dateKey)}</span>
-          <span class="history-meta">${w}</span>
-        </div>
-        <button class="x-btn" type="button" aria-label="Delete entry">✕</button>
-      </div>
-      <div class="history-thumbs"></div>
-      ${pieces.length ? '' : '<p class="subtitle">These items are no longer in your closet.</p>'}`;
+  const grid = $('#cal-grid');
+  grid.innerHTML = '';
+  const firstDow = new Date(y, m, 1).getDay();
+  const days = new Date(y, m + 1, 0).getDate();
+  const todayKey = localDateKey();
 
-    const thumbs = entry.querySelector('.history-thumbs');
-    for (const p of pieces) {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'history-thumb';
-      b.title = p.name;
-      b.innerHTML = itemCardHTML(p);
-      b.addEventListener('click', () => openDetail(p.id));
-      thumbs.appendChild(b);
-    }
-    entry.querySelector('.x-btn').addEventListener('click', async () => {
-      if (!confirm(`Delete the outfit logged ${dateLabel(o.dateKey).toLowerCase()}?`)) return;
-      await dbDelete('outfits', o.id);
-      outfits = outfits.filter(x => x.id !== o.id);
-      renderHistory();
-      toast('Entry deleted');
-    });
-    list.appendChild(entry);
+  for (let i = 0; i < firstDow; i++) {
+    const blank = document.createElement('div');
+    blank.className = 'cal-cell blank';
+    grid.appendChild(blank);
   }
+  for (let d = 1; d <= days; d++) {
+    const key = localDateKey(new Date(y, m, d));
+    const o = outfitFor(key);
+    const cell = document.createElement('button');
+    cell.type = 'button';
+    cell.className = 'cal-cell'
+      + (key === todayKey ? ' today' : '')
+      + (key > todayKey ? ' future' : '')
+      + (o ? '' : ' empty-day');
+    let thumb = '';
+    if (o) {
+      const first = o.itemIds.map(id => items.find(i => i.id === id)).filter(Boolean)[0];
+      thumb = first ? itemCardHTML(first) : '🧺';
+    }
+    cell.innerHTML = `<span class="cal-num">${d}</span><span class="cal-thumb">${thumb}</span>`;
+    cell.addEventListener('click', () => openLogDialog(key));
+    grid.appendChild(cell);
+  }
+
+  $('#history-count').textContent = outfits.length
+    ? `${outfits.length} outfit${outfits.length === 1 ? '' : 's'} logged`
+    : 'Tap a day to log what you wore';
 }
+$('#cal-prev').addEventListener('click', () => { calMonth = new Date(calMonth.getFullYear(), calMonth.getMonth() - 1, 1); renderCalendar(); });
+$('#cal-next').addEventListener('click', () => { calMonth = new Date(calMonth.getFullYear(), calMonth.getMonth() + 1, 1); renderCalendar(); });
+
+/* ---------- log-outfit dialog ---------- */
+
+let logDateKey = null;
+let logSelection = new Set();
+
+function openLogDialog(dateKey) {
+  logDateKey = dateKey;
+  const existing = outfitFor(dateKey);
+  logSelection = new Set((existing?.itemIds || []).filter(id => items.some(i => i.id === id)));
+  $('#log-title').textContent = `${existing ? 'Outfit' : 'Log outfit'} · ${dateLabel(dateKey)}`;
+  const w = existing?.weather ? `${wmoInfo(existing.weather.code).emoji} ${showT(existing.weather.tempF)} that day · ` : '';
+  $('#log-sub').textContent = items.length
+    ? w + 'Tap the pieces you wore.'
+    : 'Your closet is empty — add some items first.';
+  $('#log-delete').classList.toggle('hidden', !existing);
+
+  const grid = $('#log-grid');
+  grid.innerHTML = '';
+  const order = k => CATEGORIES.findIndex(c => c.key === k);
+  const sorted = [...items].sort((a, b) => order(a.category) - order(b.category) || b.favorite - a.favorite);
+  for (const item of sorted) {
+    const cell = document.createElement('button');
+    cell.type = 'button';
+    cell.className = 'log-cell' + (logSelection.has(item.id) ? ' sel' : '');
+    cell.title = item.name;
+    cell.innerHTML = item.photo ? itemCardHTML(item) : catOf(item.category).emoji;
+    cell.addEventListener('click', () => {
+      if (logSelection.has(item.id)) logSelection.delete(item.id); else logSelection.add(item.id);
+      cell.classList.toggle('sel', logSelection.has(item.id));
+    });
+    grid.appendChild(cell);
+  }
+  $('#log-dialog').showModal();
+}
+
+const calendarVisible = () => !$('#view-history').classList.contains('hidden');
+
+$('#log-btn').addEventListener('click', () => openLogDialog(localDateKey()));
+$('#log-cancel').addEventListener('click', () => $('#log-dialog').close());
+
+$('#log-save').addEventListener('click', async () => {
+  if (!logSelection.size) { toast('Tap at least one piece'); return; }
+  const existing = outfitFor(logDateKey);
+  const record = {
+    id: existing ? existing.id : uid(),
+    dateKey: logDateKey,
+    at: Date.now(),
+    itemIds: [...logSelection],
+    weather: existing?.weather
+      || (logDateKey === localDateKey() && weather ? { tempF: weather.tempF, code: weather.code } : null),
+  };
+  await dbPut('outfits', record);
+  if (existing) outfits[outfits.indexOf(existing)] = record; else outfits.push(record);
+
+  const [y, m, d] = logDateKey.split('-').map(Number);
+  const wornAt = new Date(y, m - 1, d, 12).getTime();
+  for (const id of logSelection) {
+    const item = items.find(i => i.id === id);
+    if (item && (!item.lastWorn || wornAt > item.lastWorn)) {
+      item.lastWorn = wornAt;
+      await dbPut('items', item);
+    }
+  }
+  $('#log-dialog').close();
+  if (calendarVisible()) renderCalendar();
+  updateWearBtn();
+  toast(existing ? 'Outfit updated ✓' : 'Added to your calendar ✓');
+});
+
+$('#log-delete').addEventListener('click', async () => {
+  const existing = outfitFor(logDateKey);
+  if (!existing) return;
+  if (!confirm(`Delete the outfit logged ${dateLabel(logDateKey).toLowerCase()}?`)) return;
+  await dbDelete('outfits', existing.id);
+  outfits = outfits.filter(o => o.id !== existing.id);
+  $('#log-dialog').close();
+  if (calendarVisible()) renderCalendar();
+  updateWearBtn();
+  toast('Entry deleted');
+});
 
 /* ================= closet ================= */
 

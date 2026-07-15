@@ -42,6 +42,7 @@
     <p id="outfit-note" class="outfit-note hidden"></p>
     <div id="outfit-grid" class="outfit-grid"></div>
     <button id="wearing-btn" class="primary-btn hidden" type="button">✓ I'm wearing this</button>
+    <button id="log-btn" class="ghost-btn hidden" type="button">📝 Log what I actually wore</button>
 
     <div id="today-empty" class="empty-state hidden">
       <div class="empty-emoji">🧺</div>
@@ -67,19 +68,21 @@
     </div>
   </section>
 
-  <!-- ============ HISTORY ============ -->
+  <!-- ============ CALENDAR ============ -->
   <section id="view-history" class="view hidden">
     <header class="view-header">
       <div>
-        <h1>History</h1>
+        <h1>Calendar</h1>
         <p id="history-count" class="subtitle"></p>
       </div>
     </header>
-    <div id="history-list"></div>
-    <div id="history-empty" class="empty-state hidden">
-      <div class="empty-emoji">📆</div>
-      <p>No outfits logged yet.<br>Tap "I'm wearing this" on the Today tab to start your history.</p>
+    <div class="cal-nav">
+      <button id="cal-prev" type="button" aria-label="Previous month">‹</button>
+      <h2 id="cal-title"></h2>
+      <button id="cal-next" type="button" aria-label="Next month">›</button>
     </div>
+    <div class="cal-dow"><span>S</span><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span></div>
+    <div id="cal-grid" class="cal-grid"></div>
   </section>
 
   <!-- ============ ADD / EDIT ============ -->
@@ -152,7 +155,7 @@
 <nav class="tabbar">
   <button data-tab="today" class="tab active" type="button"><span class="tab-icon">☀️</span>Today</button>
   <button data-tab="closet" class="tab" type="button"><span class="tab-icon">👗</span>Closet</button>
-  <button data-tab="history" class="tab" type="button"><span class="tab-icon">📆</span>History</button>
+  <button data-tab="history" class="tab" type="button"><span class="tab-icon">📆</span>Calendar</button>
   <button data-tab="add" class="tab" type="button"><span class="tab-icon">＋</span>Add</button>
 </nav>
 
@@ -194,6 +197,20 @@
     <div class="dialog-actions">
       <button id="oi-cancel" class="pill-btn" type="button">Cancel</button>
       <button id="oi-add" class="pill-btn oi-add-btn hidden" type="button">Add to closet</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- ============ LOG OUTFIT ============ -->
+<dialog id="log-dialog">
+  <div class="dialog-body">
+    <h2 id="log-title">Log outfit</h2>
+    <p id="log-sub" class="subtitle"></p>
+    <div id="log-grid" class="log-grid"></div>
+    <div class="dialog-actions">
+      <button id="log-delete" class="pill-btn danger hidden" type="button">Delete</button>
+      <button id="log-cancel" class="pill-btn" type="button">Cancel</button>
+      <button id="log-save" class="pill-btn oi-add-btn" type="button">Save</button>
     </div>
   </div>
 </dialog>

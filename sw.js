@@ -1,5 +1,5 @@
 /* My Closet service worker — app shell cache for offline use */
-const CACHE = 'my-closet-v3';
+const CACHE = 'my-closet-v4';
 const ASSETS = [
   './',
   './index.html',

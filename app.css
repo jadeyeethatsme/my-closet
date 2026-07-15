@@ -235,28 +235,68 @@ dialog img.cut { object-fit: contain; padding: 5%; background: var(--accent-soft
 .oi-check { margin-top: 8px; }
 .oi-add-btn { background: var(--accent); color: #fff; border-color: var(--accent); }
 
-/* ---------- history ---------- */
-.history-entry {
-  background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow);
-  padding: 14px; margin-bottom: 12px;
+/* ---------- outfit calendar ---------- */
+.cal-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.cal-nav h2 { font-size: 17px; }
+.cal-nav button {
+  border: 1px solid var(--line); background: var(--card); color: var(--text);
+  width: 34px; height: 34px; border-radius: 50%; cursor: pointer;
+  box-shadow: var(--shadow); font-size: 18px; line-height: 1; font-family: inherit;
 }
-.history-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-.history-date { font-weight: 700; font-size: 15px; }
-.history-meta { color: var(--muted); font-size: 13px; margin-left: 8px; }
-.history-thumbs { display: flex; gap: 8px; flex-wrap: wrap; }
-.history-thumb {
-  width: 62px; height: 62px; border-radius: 12px; overflow: hidden;
-  border: none; padding: 0; background: var(--accent-soft); cursor: pointer;
+.cal-nav button:disabled { opacity: .3; }
+.cal-dow {
+  display: grid; grid-template-columns: repeat(7, 1fr); text-align: center;
+  font-size: 11px; font-weight: 700; color: var(--muted); margin-bottom: 5px;
 }
-.history-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.history-thumb img.cut { object-fit: contain; padding: 6%; }
-.history-thumb .ph {
-  width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 26px;
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.cal-cell {
+  border: none; background: var(--card); border-radius: 10px; box-shadow: var(--shadow);
+  aspect-ratio: 1 / 1.3; padding: 3px; display: flex; flex-direction: column;
+  align-items: center; gap: 2px; cursor: pointer; font: inherit; color: var(--text); overflow: hidden;
 }
-.x-btn {
-  border: none; background: none; color: var(--muted);
-  font-size: 15px; cursor: pointer; padding: 4px 8px; font-family: inherit;
+.cal-cell.blank { visibility: hidden; }
+.cal-cell.future { opacity: .35; pointer-events: none; }
+.cal-num {
+  font-size: 11px; font-weight: 700; width: 18px; height: 18px; line-height: 18px;
+  border-radius: 50%; text-align: center; flex: none;
 }
+.cal-cell.today .cal-num { background: var(--accent); color: #fff; }
+.cal-thumb {
+  flex: 1; width: 100%; border-radius: 7px; overflow: hidden; background: var(--accent-soft);
+  display: flex; align-items: center; justify-content: center; font-size: 15px;
+}
+.cal-cell.empty-day .cal-thumb { background: none; }
+.cal-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.cal-thumb img.cut { object-fit: contain; padding: 4%; }
+.cal-thumb .ph {
+  width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
+  font-size: 15px; background: none;
+}
+
+/* ---------- log-outfit dialog ---------- */
+.log-grid {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+  max-height: 44vh; overflow-y: auto; margin-top: 10px;
+}
+.log-cell {
+  position: relative; border: 2px solid transparent; background: var(--accent-soft);
+  border-radius: 10px; aspect-ratio: 1; overflow: hidden; cursor: pointer; padding: 0;
+  font-size: 22px; display: flex; align-items: center; justify-content: center;
+}
+.log-cell img { width: 100%; height: 100%; object-fit: cover; }
+.log-cell img.cut { object-fit: contain; padding: 5%; }
+.log-cell .ph { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 22px; }
+.log-cell.sel { border-color: var(--accent); }
+.log-cell.sel::after {
+  content: '✓'; position: absolute; top: 3px; right: 3px;
+  background: var(--accent); color: #fff; font-size: 10px; width: 16px; height: 16px;
+  border-radius: 50%; display: flex; align-items: center; justify-content: center;
+}
+.ghost-btn {
+  width: 100%; border: none; background: none; color: var(--accent);
+  font-size: 14.5px; font-weight: 600; padding: 12px; cursor: pointer; font-family: inherit;
+}
+.pill-btn.danger { color: var(--danger); }
 
 /* ---------- misc ---------- */
 .empty-state { text-align: center; padding: 40px 20px; color: var(--muted); font-size: 15px; line-height: 1.5; }
