@@ -738,8 +738,6 @@ $('#f-cutout-strength').addEventListener('input', () => {
 
 /* ================= outfit photo import (on-device AI segmentation) ================= */
 
-const SEG_CDN = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3';
-const SEG_MODEL = 'Xenova/segformer_b2_clothes';
 const SEG_GROUPS = [
   { labels: ['Upper-clothes'],           category: 'top',       name: 'Top' },
   { labels: ['Pants'],                   category: 'pants',     name: 'Pants' },
@@ -752,26 +750,48 @@ const SEG_GROUPS = [
   { labels: ['Bag'],                     category: 'accessory', name: 'Bag' },
 ];
 
-let segLoader = null;
-function loadSegmenter(onStatus) {
-  if (!segLoader) {
-    segLoader = (async () => {
-      onStatus('Loading the AI model…');
-      const t = await import(SEG_CDN);
-      const opts = {
-        dtype: 'q8',
-        progress_callback: p => {
-          if (p.status === 'progress' && p.file && p.file.endsWith('.onnx')) {
-            onStatus(`Downloading the AI model… ${Math.round(p.progress || 0)}% (one time only)`);
-          }
-        },
-      };
-      // wasm on purpose: the q8 weights produce garbage output on webgpu
-      return await t.pipeline('image-segmentation', SEG_MODEL, { ...opts, device: 'wasm' });
-    })();
-    segLoader.catch(() => { segLoader = null; });  // allow retry after a failed load
-  }
-  return segLoader;
+/* inference runs in a worker (seg-worker.js) so the UI never freezes */
+let segWorker = null;
+let segSeq = 0;
+function getSegWorker() {
+  if (!segWorker) segWorker = new Worker('seg-worker.js', { type: 'module' });
+  return segWorker;
+}
+
+function runSegmentation(canvas, onStatus) {
+  return new Promise((resolve, reject) => {
+    const w = getSegWorker();
+    const id = ++segSeq;
+    const imgd = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
+    let ticker = null;
+    const cleanup = () => {
+      clearInterval(ticker);
+      w.removeEventListener('message', onMsg);
+      w.removeEventListener('error', onErr);
+    };
+    const onMsg = e => {
+      if (e.data.id !== id) return;
+      const m = e.data;
+      if (m.type === 'progress') {
+        onStatus(`Downloading the AI model… ${m.pct}% (one time only)`);
+      } else if (m.type === 'status' && m.text === 'analyzing') {
+        const started = Date.now();
+        onStatus('Analyzing your outfit… hang tight, this can take a minute on a phone.');
+        clearInterval(ticker);
+        ticker = setInterval(() => {
+          onStatus(`Analyzing your outfit… ${Math.round((Date.now() - started) / 1000)}s — hang tight.`);
+        }, 2000);
+      } else if (m.type === 'result') { cleanup(); resolve(m.segments); }
+      else if (m.type === 'error') { cleanup(); reject(new Error(m.message)); }
+    };
+    const onErr = err => { cleanup(); reject(new Error(err.message || "the AI worker couldn't start")); };
+    w.addEventListener('message', onMsg);
+    w.addEventListener('error', onErr);
+    w.postMessage(
+      { id, imageData: imgd.data.buffer, width: canvas.width, height: canvas.height },
+      [imgd.data.buffer]
+    );
+  });
 }
 
 function cropCanvas(canvas, minX, minY, maxX, maxY) {
@@ -814,14 +834,18 @@ function maskCutout(src, masks) {
 }
 
 async function segmentOutfit(file, onStatus) {
-  const canvas = await fileToCanvas(file, 1000);
-  const seg = await loadSegmenter(onStatus);
-  onStatus('Analyzing your outfit…');
-  await new Promise(r => setTimeout(r, 30));  // let the status paint before inference blocks
-  const segments = await seg(canvas.toDataURL('image/jpeg', 0.9));
+  onStatus('Reading photo…');
+  let canvas;
+  try {
+    canvas = await fileToCanvas(file, 1000);
+  } catch {
+    throw new Error("couldn't read that photo — try taking it again");
+  }
+  onStatus('Loading the AI model…');
+  const segments = await runSegmentation(canvas, onStatus);
   const found = [];
   for (const g of SEG_GROUPS) {
-    const masks = segments.filter(s => g.labels.includes(s.label)).map(s => s.mask);
+    const masks = segments.filter(s => g.labels.includes(s.label));
     if (!masks.length) continue;
     const cut = maskCutout(canvas, masks);
     if (cut) found.push({ ...g, canvas: cut });
@@ -980,7 +1004,10 @@ $('#outfit-photo-input').addEventListener('change', async e => {
     }
     $('#oi-add').classList.remove('hidden');
   } catch (err) {
-    status.textContent = "Couldn't load the AI model — check your connection and try again.";
+    status.textContent = `Something went wrong: ${err.message}. `
+      + (navigator.onLine === false
+        ? "You're offline — the AI model needs a connection the first time."
+        : 'Please try again (Wi-Fi helps for the one-time model download).');
   }
 });
 

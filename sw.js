@@ -1,10 +1,11 @@
 /* My Closet service worker — app shell cache for offline use */
-const CACHE = 'my-closet-v5';
+const CACHE = 'my-closet-v6';
 const ASSETS = [
   './',
   './index.html',
   './app.css',
   './app.js',
+  './seg-worker.js',
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',
