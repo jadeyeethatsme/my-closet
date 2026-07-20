@@ -856,7 +856,10 @@ async function segmentOutfit(file, onStatus) {
 /* ---------- visual matching: compare a detected piece to closet items ---------- */
 
 const sigCache = new Map();  // itemId -> signature | null
-const MATCH_THRESHOLD = 0.2; // below this distance a match is preselected
+/* Tuned against re-photographed vs different garments: same garment under
+   changed lighting measures ≤ ~0.09, different garments ≥ ~0.4. When unsure,
+   default to "add as new" — a wrong match hides real items from the closet. */
+const MATCH_THRESHOLD = 0.12;
 const MATCH_GROUPS = {       // which closet categories a detected piece may match
   top: ['top', 'jacket'],
   pants: ['pants', 'shorts'],
@@ -866,32 +869,46 @@ const MATCH_GROUPS = {       // which closet categories a detected piece may mat
   accessory: ['accessory'],
 };
 
-/* coarse color signature: 4x4 grid of mean RGB + 27-bin histogram over visible pixels */
+/* coarse color signature: 4x4 grid of mean RGB + 27-bin histogram over visible
+   pixels, normalized for overall brightness so different lighting between the
+   original item photo and today's mirror photo doesn't skew the comparison */
 function canvasSignature(source, hasAlpha) {
   const S = 32, G = 4;
   const c = document.createElement('canvas'); c.width = S; c.height = S;
   const ctx = c.getContext('2d');
   ctx.drawImage(source, 0, 0, S, S);
   const d = ctx.getImageData(0, 0, S, S).data;
-  const grid = new Float32Array(G * G * 3);
-  const gcount = new Float32Array(G * G);
-  const hist = new Float32Array(27);
-  let total = 0;
   // full photos (no alpha): sample the center region to dodge the background
   const lo = hasAlpha ? 0 : 5, hi = hasAlpha ? S : S - 5;
+
+  // pass 1: mean luminance of visible pixels
+  let lum = 0, total = 0;
   for (let y = lo; y < hi; y++) {
     for (let x = lo; x < hi; x++) {
       const i = (y * S + x) * 4;
       if (d[i + 3] < 128) continue;
-      const r = d[i], g = d[i + 1], b = d[i + 2];
-      const gi = ((y * G / S) | 0) * G + ((x * G / S) | 0);
-      grid[gi * 3] += r; grid[gi * 3 + 1] += g; grid[gi * 3 + 2] += b;
-      gcount[gi]++;
-      hist[((r / 86) | 0) * 9 + ((g / 86) | 0) * 3 + ((b / 86) | 0)]++;
+      lum += 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
       total++;
     }
   }
   if (total < 20) return null;
+  const k = Math.min(2.5, Math.max(0.6, 110 / (lum / total || 1)));
+
+  // pass 2: brightness-normalized grid + histogram
+  const grid = new Float32Array(G * G * 3);
+  const gcount = new Float32Array(G * G);
+  const hist = new Float32Array(27);
+  for (let y = lo; y < hi; y++) {
+    for (let x = lo; x < hi; x++) {
+      const i = (y * S + x) * 4;
+      if (d[i + 3] < 128) continue;
+      const r = Math.min(255, d[i] * k), g = Math.min(255, d[i + 1] * k), b = Math.min(255, d[i + 2] * k);
+      const gi = ((y * G / S) | 0) * G + ((x * G / S) | 0);
+      grid[gi * 3] += r; grid[gi * 3 + 1] += g; grid[gi * 3 + 2] += b;
+      gcount[gi]++;
+      hist[((r / 86) | 0) * 9 + ((g / 86) | 0) * 3 + ((b / 86) | 0)]++;
+    }
+  }
   for (let i = 0; i < G * G; i++) {
     const n = gcount[i] || 1;
     grid[i * 3] /= n * 255; grid[i * 3 + 1] /= n * 255; grid[i * 3 + 2] /= n * 255;
