@@ -294,6 +294,20 @@ dialog img.cut { object-fit: contain; padding: 5%; background: var(--accent-soft
   background: var(--accent); color: #fff; font-size: 10px; width: 16px; height: 16px;
   border-radius: 50%; display: flex; align-items: center; justify-content: center;
 }
+.log-photo-slot {
+  position: relative; width: 100%; aspect-ratio: 4 / 3; margin: 4px 0 10px;
+  border-radius: 14px; overflow: hidden; cursor: pointer;
+  background: var(--accent-soft); display: flex; align-items: center; justify-content: center;
+  color: var(--muted); font-size: 14px; text-align: center; line-height: 1.5;
+}
+.log-photo-slot img { width: 100%; height: 100%; object-fit: cover; }
+.log-photo-remove {
+  position: absolute; top: 8px; right: 8px; width: 30px; height: 30px; border-radius: 50%;
+  border: none; background: rgba(0,0,0,.55); color: #fff; font-size: 15px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.log-pick-label { margin: 4px 0 8px; }
+.log-pick-label em { font-style: normal; }
 .ghost-btn {
   width: 100%; border: none; background: none; color: var(--accent);
   font-size: 14.5px; font-weight: 600; padding: 12px; cursor: pointer; font-family: inherit;

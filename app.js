@@ -371,6 +371,16 @@ async function renderToday() {
 let calMonth = (() => { const n = new Date(); return new Date(n.getFullYear(), n.getMonth(), 1); })();
 const outfitFor = key => outfits.find(o => o.dateKey === key);
 
+const outfitURLs = new Map();  // outfit id -> objectURL for its full photo
+function outfitPhotoURL(o) {
+  if (!o.photo) return null;
+  if (!outfitURLs.has(o.id)) outfitURLs.set(o.id, URL.createObjectURL(o.photo));
+  return outfitURLs.get(o.id);
+}
+function dropOutfitURL(id) {
+  if (outfitURLs.has(id)) { URL.revokeObjectURL(outfitURLs.get(id)); outfitURLs.delete(id); }
+}
+
 function renderCalendar() {
   const y = calMonth.getFullYear(), m = calMonth.getMonth();
   const now = new Date();
@@ -399,8 +409,12 @@ function renderCalendar() {
       + (o ? '' : ' empty-day');
     let thumb = '';
     if (o) {
-      const first = o.itemIds.map(id => items.find(i => i.id === id)).filter(Boolean)[0];
-      thumb = first ? itemCardHTML(first) : '🧺';
+      if (o.photo) {
+        thumb = `<img src="${outfitPhotoURL(o)}" alt="">`;
+      } else {
+        const first = o.itemIds.map(id => items.find(i => i.id === id)).filter(Boolean)[0];
+        thumb = first ? itemCardHTML(first) : '🧺';
+      }
     }
     cell.innerHTML = `<span class="cal-num">${d}</span><span class="cal-thumb">${thumb}</span>`;
     cell.addEventListener('click', () => openLogDialog(key));
@@ -418,16 +432,36 @@ $('#cal-next').addEventListener('click', () => { calMonth = new Date(calMonth.ge
 
 let logDateKey = null;
 let logSelection = new Set();
+let logPhoto = null;        // Blob | null — full outfit photo for the day
+let logPhotoURL = null;
 
-function openLogDialog(dateKey, preset = null) {
+function renderLogPhoto() {
+  if (logPhotoURL) { URL.revokeObjectURL(logPhotoURL); logPhotoURL = null; }
+  const prev = $('#log-photo-preview'), hint = $('#log-photo-hint'), rm = $('#log-photo-remove');
+  if (logPhoto) {
+    logPhotoURL = URL.createObjectURL(logPhoto);
+    prev.src = logPhotoURL;
+    prev.classList.remove('hidden');
+    hint.classList.add('hidden');
+    rm.classList.remove('hidden');
+  } else {
+    prev.classList.add('hidden');
+    prev.removeAttribute('src');
+    hint.classList.remove('hidden');
+    rm.classList.add('hidden');
+  }
+}
+
+function openLogDialog(dateKey, preset = null, photo = undefined) {
   logDateKey = dateKey;
   const existing = outfitFor(dateKey);
   logSelection = new Set(preset || (existing?.itemIds || []).filter(id => items.some(i => i.id === id)));
+  logPhoto = photo !== undefined ? photo : (existing?.photo || null);
+  renderLogPhoto();
   $('#log-title').textContent = `${existing ? 'Outfit' : 'Log outfit'} · ${dateLabel(dateKey)}`;
   const w = existing?.weather ? `${wmoInfo(existing.weather.code).emoji} ${showT(existing.weather.tempF)} that day · ` : '';
-  $('#log-sub').textContent = items.length
-    ? w + 'Tap the pieces you wore.'
-    : 'Your closet is empty — add some items first.';
+  $('#log-sub').textContent = (w + 'Add a photo of your outfit, pick the pieces you wore, or both.').trim();
+  $('#log-pick-label').classList.toggle('hidden', !items.length);
   $('#log-delete').classList.toggle('hidden', !existing);
 
   const grid = $('#log-grid');
@@ -454,18 +488,41 @@ const calendarVisible = () => !$('#view-history').classList.contains('hidden');
 $('#log-btn').addEventListener('click', () => openLogDialog(localDateKey()));
 $('#log-cancel').addEventListener('click', () => $('#log-dialog').close());
 
+$('#log-photo-slot').addEventListener('click', e => {
+  if (e.target.closest('#log-photo-remove')) return;
+  $('#log-photo-input').click();
+});
+$('#log-photo-input').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  e.target.value = '';
+  try {
+    const canvas = await fileToCanvas(file, 1100);
+    logPhoto = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.82));
+    renderLogPhoto();
+  } catch { toast("Couldn't read that photo"); }
+});
+$('#log-photo-remove').addEventListener('click', e => {
+  e.preventDefault();
+  e.stopPropagation();
+  logPhoto = null;
+  renderLogPhoto();
+});
+
 $('#log-save').addEventListener('click', async () => {
-  if (!logSelection.size) { toast('Tap at least one piece'); return; }
+  if (!logSelection.size && !logPhoto) { toast('Add a photo or tap a piece'); return; }
   const existing = outfitFor(logDateKey);
   const record = {
     id: existing ? existing.id : uid(),
     dateKey: logDateKey,
     at: Date.now(),
     itemIds: [...logSelection],
+    photo: logPhoto || null,
     weather: existing?.weather
       || (logDateKey === localDateKey() && weather ? { tempF: weather.tempF, code: weather.code } : null),
   };
   await dbPut('outfits', record);
+  dropOutfitURL(record.id);
   if (existing) outfits[outfits.indexOf(existing)] = record; else outfits.push(record);
 
   const [y, m, d] = logDateKey.split('-').map(Number);
@@ -488,6 +545,7 @@ $('#log-delete').addEventListener('click', async () => {
   if (!existing) return;
   if (!confirm(`Delete the outfit logged ${dateLabel(logDateKey).toLowerCase()}?`)) return;
   await dbDelete('outfits', existing.id);
+  dropOutfitURL(existing.id);
   outfits = outfits.filter(o => o.id !== existing.id);
   $('#log-dialog').close();
   if (calendarVisible()) renderCalendar();
@@ -955,6 +1013,7 @@ async function matchCandidates(piece) {
 
 let oiRows = [];          // [{piece, row}]
 let oiMode = 'closet';    // 'closet' = add items to closet, 'log' = log the day's outfit
+let oiFullPhoto = null;   // full photo kept for the calendar when logging
 $('#outfit-import-btn').addEventListener('click', () => { oiMode = 'closet'; $('#outfit-photo-input').click(); });
 $('#log-photo-btn').addEventListener('click', () => {
   oiMode = 'log';
@@ -970,6 +1029,14 @@ $('#outfit-photo-input').addEventListener('change', async e => {
   const status = $('#oi-status'), results = $('#oi-results');
   results.innerHTML = '';
   oiRows = [];
+  oiFullPhoto = null;
+  if (oiMode === 'log') {
+    // keep a full-frame copy for the calendar, independent of the piece cutouts
+    try {
+      const cnv = await fileToCanvas(file, 1100);
+      oiFullPhoto = await new Promise(r => cnv.toBlob(r, 'image/jpeg', 0.82));
+    } catch { /* fall back to piece thumbnail on the calendar */ }
+  }
   $('#oi-title').textContent = oiMode === 'log' ? `Outfit · ${dateLabel(logDateKey || localDateKey())}` : 'Outfit import';
   $('#oi-add').textContent = oiMode === 'log' ? 'Continue' : 'Add to closet';
   $('#oi-add').classList.add('hidden');
@@ -1068,7 +1135,7 @@ $('#oi-add').addEventListener('click', async () => {
     btn.textContent = btnLabel;
     $('#outfit-import-dialog').close();
     if (added) toast(`Added ${added} new item${added === 1 ? '' : 's'} to your closet`);
-    openLogDialog(logDateKey || localDateKey(), [...ids]);
+    openLogDialog(logDateKey || localDateKey(), [...ids], oiFullPhoto || undefined);
     return;
   }
 
@@ -1278,7 +1345,9 @@ $('#export-btn').addEventListener('click', async () => {
   for (const i of items) {
     out.push({ ...i, photo: i.photo ? await blobToDataURL(i.photo) : null });
   }
-  const payload = { version: 2, exportedAt: new Date().toISOString(), items: out, outfits };
+  const outOutfits = [];
+  for (const o of outfits) outOutfits.push({ ...o, photo: o.photo ? await blobToDataURL(o.photo) : null });
+  const payload = { version: 3, exportedAt: new Date().toISOString(), items: out, outfits: outOutfits };
   const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -1303,8 +1372,10 @@ $('#import-input').addEventListener('change', async e => {
       if (idx >= 0) items[idx] = item; else items.push(item);
       n++;
     }
-    for (const o of j.outfits || []) {
+    for (const raw of j.outfits || []) {
+      const o = { ...raw, photo: typeof raw.photo === 'string' ? await dataURLToBlob(raw.photo) : null };
       await dbPut('outfits', o);
+      dropOutfitURL(o.id);
       const idx = outfits.findIndex(x => x.id === o.id);
       if (idx >= 0) outfits[idx] = o; else outfits.push(o);
     }
